@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 ordered-float = "3.9.1"
+petgraph = "0.6.4"
