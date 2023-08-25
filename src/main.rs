@@ -107,6 +107,59 @@ pub fn der(expr: Rc<Ex>, n: usize) -> Rc<Ex> {
     Rc::new(Ex::Der(expr, n))
 }
 
+pub fn get_der(expr: Rc<Ex>) -> Rc<Ex> {
+    match &*expr {
+        Ex::Const(_) => Rc::new(Ex::Const(NotNan::new(0.0).unwrap())), // d/dt(c) = 0
+        Ex::Var(name) => Rc::new(Ex::Der(Rc::new(Ex::Var(name.clone())), 1)), // d/dt(x) = Der(x, 1)
+        Ex::Par(_) => Rc::new(Ex::Const(NotNan::new(0.0).unwrap())),   // d/dt(parameter) = 0
+        Ex::BinOp(BinOpType::Add, left, right) => {
+            // (u + v)' = u' + v'
+            let left_der = get_der(left.clone());
+            let right_der = get_der(right.clone());
+            binop(Add, left_der, right_der)
+        }
+        Ex::BinOp(BinOpType::Sub, left, right) => {
+            // (u - v)' = u' - v'
+            let left_der = get_der(left.clone());
+            let right_der = get_der(right.clone());
+            binop(Sub, left_der, right_der)
+        }
+        Ex::BinOp(BinOpType::Mul, left, right) => {
+            // (u * v)' = u' * v + u * v'
+            let left_der = get_der(left.clone());
+            let right_der = get_der(right.clone());
+            binop(
+                Add,
+                binop(Mul, left_der, right.clone()),
+                binop(Mul, left.clone(), right_der),
+            )
+        }
+        Ex::BinOp(BinOpType::Div, left, right) => {
+            // (u / v)' = (u' * v - u * v') / v^2
+            let left_der = get_der(left.clone());
+            let right_der = get_der(right.clone());
+            let numerator = binop(
+                Sub,
+                binop(Mul, left_der, right.clone()),
+                binop(Mul, left.clone(), right_der),
+            );
+            let denominator = binop(Mul, right.clone(), right.clone());
+            binop(Div, numerator, denominator)
+        }
+        Ex::UnOp(UnOpType::Neg, operand) => {
+            // (-u)' = -u'
+            let operand_der = get_der(operand.clone());
+            unop(UnOpType::Neg, operand_der)
+        }
+        // Add more cases for other unary operations (e.g., Sin, Cos) as needed.
+        _ => panic!("get_der: unsupported expression: {:?}", expr),
+    }
+}
+
+// pub fn get_jac(eqs, vars) -> Vec<Vec<Rc<Ex>>> {
+//     todo!()
+// }
+
 fn extract_vars_and_ders(expr: Rc<Ex>) -> HashSet<Rc<Ex>> {
     let mut result = HashSet::new();
 
@@ -234,7 +287,7 @@ pub fn computed_highest_diff_variables(structure: &Structure) -> Vec<bool> {
     for var in 0..nvars {
         let mut current_var = var;
         if structure.var_diff.to[current_var].is_none() && !varwhitelist[current_var] {
-            while structure.g.fadjlist[current_var].is_empty() {
+            while structure.g.badjlist[current_var].is_empty() {
                 match structure.var_diff.from[current_var] {
                     Some(next_var) => current_var = next_var,
                     None => break,
@@ -286,14 +339,11 @@ pub fn fullvars_to_diffgraph(fullvars: &[Rc<Ex>]) -> DiffGraph {
     DiffGraph { to, from }
 }
 
-pub fn state_from_eqs(eqs: &[Rc<Ex>]) -> State {
+pub fn state_from_eqs(eqs: &[Rc<Ex>], vars: &[Rc<Ex>]) -> State {
     let mut eq_to_diff = DiffGraph::default(); // this stays empty so not mut
 
-    // almost certainly slow
-    let vars = vars_from_eqs(eqs);
     let mut var_to_diff = fullvars_to_diffgraph(&vars);
-    // its possible that idxs get messed up between g and vars
-    let mut g = BipartiteGraph::from_equations(eqs);
+    let mut g = BipartiteGraph::from_eqs_and_vars(eqs, vars);
 
     for (i, eq) in eqs.iter().enumerate() {
         eq_to_diff.to.push(None);
@@ -309,7 +359,7 @@ pub fn state_from_eqs(eqs: &[Rc<Ex>]) -> State {
 
     let state = State {
         eqs: eqs.to_vec(),
-        fullvars: vars,
+        fullvars: vars.to_vec(),
         structure,
         extra_eqs: Vec::new(),
     };
@@ -364,13 +414,14 @@ pub fn augmenting_path(
     false
 }
 
-pub fn pants(s: &mut State) {
+pub fn pants(s: &mut State) -> Matching {
+    println!("{:?}", s.fullvars);
     let mut highest_diff_vars = computed_highest_diff_variables(&s.structure);
 
     let mut structure = &mut s.structure;
 
-    let mut vd = &mut structure.var_diff;
-    let mut ed = &mut structure.eq_diff;
+    // let mut vd = &mut structure.var_diff;
+    // let mut ed = &mut structure.eq_diff;
     let mut g = &mut structure.g;
     let mut m = Matching::new(g.badjlist.len());
 
@@ -380,7 +431,7 @@ pub fn pants(s: &mut State) {
     let mut colored_eqs = vec![false; neqs];
     let mut colored_vars = vec![false; nvars];
 
-    for eq in 0..neqs {
+    for mut eq in 0..neqs {
         let i = eq;
         let mut path_found = false;
 
@@ -391,115 +442,101 @@ pub fn pants(s: &mut State) {
             path_found = augmenting_path(
                 &mut m,
                 g,
-                i,
+                eq,
                 &mut colored_eqs,
                 &mut colored_vars,
                 &highest_diff_vars,
             );
             if path_found {
+                println!("FOUND A PATH for eq# {}, {:?}", eq, m);
                 break;
-            } else {
-                for vidx in 0..colored_vars.len() {
-                    if !colored_vars[vidx] {
-                        continue;
-                    }
-                    nvars += 1;
-                    // append to
-                    // colored_vars.
-
-                    colored_vars.push(false);
-
-                    g.badjlist.push(HashSet::new()); // g new vertex
-
-                    // this adds the new vertex and edge to the var_to_diff graph
-                    structure.var_diff.to[vidx] = Some(nvars - 1); // is -1 correct?
-                    structure.var_diff.to.push(None); // the new vertex has no outgoing edges
-                    structure.var_diff.from.push(Some(vidx)); // but there is a new incoming edge
-
-                    // the new variable is highest diffed since it is the diff of a previously highest diffed variable
-                    highest_diff_vars[vidx] = false;
-                    highest_diff_vars.push(false);
-                    highest_diff_vars[structure.var_diff.to[vidx].unwrap()] = true;
-
-                    // add the new variable to fullvars
-                    s.fullvars.push(der(s.fullvars[vidx].clone(), 1));
-
-                    // m is a matching from v
-                    m.m.push(None);
-                    assert_eq!(g.badjlist.len(), nvars);
-                    assert_eq!(structure.var_diff.to.len(), nvars);
-                    assert_eq!(m.m.len(), nvars);
+            }
+            println!("{:?}", colored_eqs);
+            for vidx in 0..colored_vars.len() {
+                if !colored_vars[vidx] {
+                    continue;
                 }
-                for eidx in 0..colored_eqs.len() {
-                    if colored_eqs[eidx] {
-                        neqs += 1;
-                        g.fadjlist.push(HashSet::new()); // g new equation
+                nvars += 1;
 
-                        structure.eq_diff.to[eidx] = Some(neqs - 1);
-                        structure.eq_diff.to.push(None); // the new equation has no outgoing edges
-                        structure.eq_diff.from.push(Some(eidx)); // but there is a new incoming edge
+                colored_vars.push(false);
 
-                        let new_eq = get_der(s.eqs[eidx].clone()); // eq to diff
-                        s.fullvars.push(new_eq.clone());
+                g.badjlist.push(HashSet::new()); // g new vertex
+
+                // this adds the new vertex and edge to the var_to_diff graph
+                structure.var_diff.to[vidx] = Some(nvars - 1); // is -1 correct?
+                structure.var_diff.to.push(None); // the new vertex has no outgoing edges
+                structure.var_diff.from.push(Some(vidx)); // but there is a new incoming edge
+
+                // the new variable is highest diffed since it is the diff of a previously highest diffed variable
+                highest_diff_vars[vidx] = false;
+                highest_diff_vars.push(false);
+                highest_diff_vars[structure.var_diff.to[vidx].unwrap()] = true;
+
+                // add the new variable to fullvars
+                s.fullvars.push(der(s.fullvars[vidx].clone(), 1));
+
+                // m is a matching from v
+                m.m.push(None);
+                assert_eq!(g.badjlist.len(), nvars);
+                assert_eq!(structure.var_diff.to.len(), nvars);
+                assert_eq!(m.m.len(), nvars);
+            }
+
+            for eidx in 0..colored_eqs.len() {
+                if colored_eqs[eidx] {
+                    neqs += 1;
+                    colored_eqs.push(false);
+
+                    // g new equation
+                    g.fadjlist.push(HashSet::new());
+
+                    structure.eq_diff.to[eidx] = Some(neqs - 1);
+                    structure.eq_diff.to.push(None); // the new equation has no outgoing edges
+                    structure.eq_diff.from.push(Some(eidx)); // but there is a new incoming edge
+                    let new_eq = get_der(s.eqs[eidx].clone()); // eq to diff
+                    s.eqs.push(new_eq.clone());
+                    println!("TOOKA  DER {:?}", new_eq);
+
+                    // vars connected to eq[eidx]
+                    // probably can get around the clone here
+                    for e_to_j in g.fadjlist[eidx].clone().iter() {
+                        g.fadjlist[neqs - 1].insert(*e_to_j);
+                        g.badjlist[*e_to_j].insert(neqs - 1);
+
+                        g.fadjlist[neqs - 1].insert(structure.var_diff.to[*e_to_j].unwrap());
+                        g.badjlist[structure.var_diff.to[*e_to_j].unwrap()].insert(neqs - 1);
                     }
+                    println!("{:?}", g);
                 }
             }
+            for vidx in 0..colored_vars.len() {
+                if !colored_vars[vidx] {
+                    continue;
+                }
+                // var_eq_matching[var_to_diff[var]] = eq_to_diff[var_eq_matching[var]]
+
+                m.m[structure.var_diff.to[vidx].unwrap()] = structure.eq_diff.to[m.m[vidx].unwrap()]
+            }
+            println!("m: {:?}", m);
+            // println!("{:?}", );
+            eq = structure.eq_diff.to[eq].unwrap();
         }
     }
+    m
 }
 
-pub fn get_der(expr: Rc<Ex>) -> Rc<Ex> {
-    match &*expr {
-        Ex::Const(_) => Rc::new(Ex::Const(NotNan::new(0.0).unwrap())), // d/dt(c) = 0
-        Ex::Var(name) => Rc::new(Ex::Der(Rc::new(Ex::Var(name.clone())), 1)), // d/dt(x) = Der(x, 1)
-        Ex::Par(_) => Rc::new(Ex::Const(NotNan::new(0.0).unwrap())),   // d/dt(parameter) = 0
-        Ex::BinOp(BinOpType::Add, left, right) => {
-            // (u + v)' = u' + v'
-            let left_der = get_der(left.clone());
-            let right_der = get_der(right.clone());
-            binop(Add, left_der, right_der)
-        }
-        Ex::BinOp(BinOpType::Sub, left, right) => {
-            // (u - v)' = u' - v'
-            let left_der = get_der(left.clone());
-            let right_der = get_der(right.clone());
-            binop(Sub, left_der, right_der)
-        }
-        Ex::BinOp(BinOpType::Mul, left, right) => {
-            // (u * v)' = u' * v + u * v'
-            let left_der = get_der(left.clone());
-            let right_der = get_der(right.clone());
-            binop(
-                Add,
-                binop(Mul, left_der, right.clone()),
-                binop(Mul, left.clone(), right_der),
-            )
-        }
-        Ex::BinOp(BinOpType::Div, left, right) => {
-            // (u / v)' = (u' * v - u * v') / v^2
-            let left_der = get_der(left.clone());
-            let right_der = get_der(right.clone());
-            let numerator = binop(
-                Sub,
-                binop(Mul, left_der, right.clone()),
-                binop(Mul, left.clone(), right_der),
-            );
-            let denominator = binop(Mul, right.clone(), right.clone());
-            binop(Div, numerator, denominator)
-        }
-        Ex::UnOp(UnOpType::Neg, operand) => {
-            // (-u)' = -u'
-            let operand_der = get_der(operand.clone());
-            unop(UnOpType::Neg, operand_der)
-        }
-        // Add more cases for other unary operations (e.g., Sin, Cos) as needed.
-        _ => panic!("get_der: unsupported expression: {:?}", expr),
-    }
-}
+pub fn example2() -> (Vec<Rc<Ex>>, Vec<Rc<Ex>>) {
+    vars!(x, y);
+    let dx = der(x.clone(), 1);
+    let dy = der(y.clone(), 1);
 
-// pub fn get_jac(eqs, vars) -> Vec<Vec<Rc<Ex>>> {
-//     todo!()
-// }
+    let eq1 = binop(Add, dx.clone(), dy.clone());
+    // x + y^2 == 0
+    let eq2 = binop(Add, x.clone(), binop(Mul, y.clone(), y.clone()));
+
+    let eqs = vec![eq1, eq2];
+    (eqs, vec![dx.clone(), dy.clone(), x.clone(), y.clone()])
+}
 
 fn main() {
     let eqs = pend_sys();
@@ -508,7 +545,7 @@ fn main() {
     assert_eq!(fullvars.len(), 9);
     assert!(fullvars.is_sorted());
 
-    let state = state_from_eqs(&eqs);
+    // let state = state_from_eqs(&eqs);
 
     let X = (0..2).collect::<Vec<_>>();
     let Y = (0..2).collect::<Vec<_>>();
@@ -529,7 +566,7 @@ fn main() {
     let mut m = Matching::new(bg.badjlist.len());
     m.m[0] = Some(0);
 
-    println!("{:?}", bg);
+    // println!("{:?}", bg);
     // an example eqs for the above graph
     vars!(x, y, z);
     // x + y, x
@@ -540,17 +577,15 @@ fn main() {
 
     let g3 = BipartiteGraph::from_eqs_and_vars(&eqs, &vars);
 
-    // HashSet
-    // HashSet::from(eqs);
     assert_eq!(bg, g3);
 
     let mut colored_eqs = vec![false; bg.fadjlist.len()];
     let mut colored_vars = vec![false; bg.badjlist.len()];
 
-    let state = state_from_eqs(&eqs);
+    let state = state_from_eqs(&eqs, &vars);
     let mut highest_diff_vars = computed_highest_diff_variables(&state.structure);
 
-    println!("{:?}", highest_diff_vars);
+    // println!("{:?}", highest_diff_vars);
     let pf = augmenting_path(
         &mut m,
         &bg,
@@ -559,14 +594,19 @@ fn main() {
         &mut colored_vars,
         &highest_diff_vars,
     );
-    println!("{:?}", m);
-    println!("{:?}", pf);
+    // println!("{:?}", m);
+    // println!("{:?}", pf);
 
     let bg2 = BipartiteGraph::from_eqs_and_vars(
         &vec![x.clone(), y.clone()],
         &vec![x.clone(), y.clone(), z.clone()],
     );
-    println!("{:?}", bg2);
+    // println!("{:?}", bg2);
+
+    let (example_eqs, example_vars) = example2();
+    let mut s = state_from_eqs(&example_eqs, &example_vars);
+    let matching = pants(&mut s);
+    println!("{:?}", matching);
 }
 
 #[cfg(test)]
@@ -583,8 +623,8 @@ mod test {
         vars!(x, y);
         let mut eqs = vec![binop(Add, x.clone(), y.clone()), x.clone()];
         // let g3 = BipartiteGraph::from_equations(&eqs);
-        let state = state_from_eqs(&eqs);
-        let bg = &state.structure.g;
+        // let mut state = state_from_eqs(&eqs);
+        // let bg = &state.structure.g;
 
         let mut colored_eqs = vec![false; bg.fadjlist.len()];
         let mut colored_vars = vec![false; bg.badjlist.len()];
@@ -604,6 +644,7 @@ mod test {
         assert!(pf);
         assert_eq!(m.m, vec![Some(1), Some(0)]);
 
+        // pants(state);
         // todo need a test where neqs != nvars
     }
 
@@ -618,7 +659,7 @@ mod test {
         // x + y^2 == 0
         let eq2 = binop(Add, x.clone(), binop(Mul, y.clone(), y.clone()));
 
-        // let eqs = vec![eq1, eq2];
+        let eqs = vec![eq1, eq2];
 
         let deq2 = get_der(eq2);
         // dx + 2y*dy
