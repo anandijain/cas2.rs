@@ -145,8 +145,8 @@ pub fn vars_from_eqs(eqs: &[Rc<Ex>]) -> Vec<Rc<Ex>> {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct BipartiteGraph {
     ne: usize,
-    fadjlist: Vec<Vec<usize>>, // each element is a list of v_nodes (indices) that occur in the equation. len == neqs
-    badjlist: Vec<Vec<usize>>, // this is which equations the v_nodes occur in. len == nvars
+    fadjlist: Vec<HashSet<usize>>, // each element is a set of v_nodes (indices) that occur in the equation. len == neqs
+    badjlist: Vec<HashSet<usize>>, // this is which equations the v_nodes occur in. len == nvars
 }
 
 impl BipartiteGraph {
@@ -156,12 +156,12 @@ impl BipartiteGraph {
     }
 
     pub fn from_eqs_and_vars(eqs: &[Rc<Ex>], vars: &[Rc<Ex>]) -> Self {
-        assert!(vars.is_sorted());
-        assert!(eqs.is_sorted());
+        // assert!(vars.is_sorted());
+        // assert!(eqs.is_sorted());
 
         // Initialize the adjacency lists
-        let mut fadjlist = vec![Vec::new(); eqs.len()];
-        let mut badjlist = vec![Vec::new(); vars.len()];
+        let mut fadjlist = vec![HashSet::new(); eqs.len()];
+        let mut badjlist = vec![HashSet::new(); vars.len()];
 
         // Iterate through the equations
         for (i, eq) in eqs.iter().enumerate() {
@@ -171,8 +171,8 @@ impl BipartiteGraph {
             // extracted_vars_ders.sort();
             for var_or_der in _vars {
                 if let Some(index) = vars.iter().position(|node| *node == var_or_der) {
-                    badjlist[index].push(i);
-                    fadjlist[i].push(index);
+                    badjlist[index].insert(i);
+                    fadjlist[i].insert(index);
                 }
             }
         }
@@ -409,7 +409,7 @@ pub fn pants(s: &mut State) {
 
                     colored_vars.push(false);
 
-                    g.badjlist.push(vec![]); // g new vertex
+                    g.badjlist.push(HashSet::new()); // g new vertex
 
                     // this adds the new vertex and edge to the var_to_diff graph
                     structure.var_diff.to[vidx] = Some(nvars - 1); // is -1 correct?
@@ -433,13 +433,13 @@ pub fn pants(s: &mut State) {
                 for eidx in 0..colored_eqs.len() {
                     if colored_eqs[eidx] {
                         neqs += 1;
-                        g.fadjlist.push(vec![]); // g new equation
+                        g.fadjlist.push(HashSet::new()); // g new equation
 
                         structure.eq_diff.to[eidx] = Some(neqs - 1);
                         structure.eq_diff.to.push(None); // the new equation has no outgoing edges
                         structure.eq_diff.from.push(Some(eidx)); // but there is a new incoming edge
 
-                        let new_eq = take_der(s.eqs[eidx].clone()); // eq to diff
+                        let new_eq = get_der(s.eqs[eidx].clone()); // eq to diff
                         s.fullvars.push(new_eq.clone());
                     }
                 }
@@ -448,27 +448,27 @@ pub fn pants(s: &mut State) {
     }
 }
 
-pub fn take_der(expr: Rc<Ex>) -> Rc<Ex> {
+pub fn get_der(expr: Rc<Ex>) -> Rc<Ex> {
     match &*expr {
         Ex::Const(_) => Rc::new(Ex::Const(NotNan::new(0.0).unwrap())), // d/dt(c) = 0
         Ex::Var(name) => Rc::new(Ex::Der(Rc::new(Ex::Var(name.clone())), 1)), // d/dt(x) = Der(x, 1)
         Ex::Par(_) => Rc::new(Ex::Const(NotNan::new(0.0).unwrap())),   // d/dt(parameter) = 0
         Ex::BinOp(BinOpType::Add, left, right) => {
             // (u + v)' = u' + v'
-            let left_der = take_der(left.clone());
-            let right_der = take_der(right.clone());
+            let left_der = get_der(left.clone());
+            let right_der = get_der(right.clone());
             binop(Add, left_der, right_der)
         }
         Ex::BinOp(BinOpType::Sub, left, right) => {
             // (u - v)' = u' - v'
-            let left_der = take_der(left.clone());
-            let right_der = take_der(right.clone());
+            let left_der = get_der(left.clone());
+            let right_der = get_der(right.clone());
             binop(Sub, left_der, right_der)
         }
         Ex::BinOp(BinOpType::Mul, left, right) => {
             // (u * v)' = u' * v + u * v'
-            let left_der = take_der(left.clone());
-            let right_der = take_der(right.clone());
+            let left_der = get_der(left.clone());
+            let right_der = get_der(right.clone());
             binop(
                 Add,
                 binop(Mul, left_der, right.clone()),
@@ -477,8 +477,8 @@ pub fn take_der(expr: Rc<Ex>) -> Rc<Ex> {
         }
         Ex::BinOp(BinOpType::Div, left, right) => {
             // (u / v)' = (u' * v - u * v') / v^2
-            let left_der = take_der(left.clone());
-            let right_der = take_der(right.clone());
+            let left_der = get_der(left.clone());
+            let right_der = get_der(right.clone());
             let numerator = binop(
                 Sub,
                 binop(Mul, left_der, right.clone()),
@@ -489,13 +489,17 @@ pub fn take_der(expr: Rc<Ex>) -> Rc<Ex> {
         }
         Ex::UnOp(UnOpType::Neg, operand) => {
             // (-u)' = -u'
-            let operand_der = take_der(operand.clone());
+            let operand_der = get_der(operand.clone());
             unop(UnOpType::Neg, operand_der)
         }
         // Add more cases for other unary operations (e.g., Sin, Cos) as needed.
-        _ => panic!("take_der: unsupported expression: {:?}", expr),
+        _ => panic!("get_der: unsupported expression: {:?}", expr),
     }
 }
+
+// pub fn get_jac(eqs, vars) -> Vec<Vec<Rc<Ex>>> {
+//     todo!()
+// }
 
 fn main() {
     let eqs = pend_sys();
@@ -513,8 +517,14 @@ fn main() {
     let mut bg = BipartiteGraph::default();
 
     bg.ne = E.len();
-    bg.fadjlist = vec![vec![0, 1], vec![0]];
-    bg.badjlist = vec![vec![0, 1], vec![0]];
+    bg.fadjlist = vec![
+        [0, 1].iter().cloned().collect(),
+        [0].iter().cloned().collect(),
+    ];
+    bg.badjlist = vec![
+        [0, 1].iter().cloned().collect(),
+        [0].iter().cloned().collect(),
+    ];
 
     let mut m = Matching::new(bg.badjlist.len());
     m.m[0] = Some(0);
@@ -525,9 +535,13 @@ fn main() {
     // x + y, x
     // [1, 2], [1] == fadjlist
     let mut eqs = vec![binop(Add, x.clone(), y.clone()), x.clone()];
-    eqs.sort();
-    
-    let g3 = BipartiteGraph::from_equations(&eqs);
+    // eqs.sort();
+    let vars = vec![x.clone(), y.clone()];
+
+    let g3 = BipartiteGraph::from_eqs_and_vars(&eqs, &vars);
+
+    // HashSet
+    // HashSet::from(eqs);
     assert_eq!(bg, g3);
 
     let mut colored_eqs = vec![false; bg.fadjlist.len()];
@@ -565,10 +579,6 @@ mod test {
         // let E = vec![(0, 0), (0, 1), (1, 0)];
 
         // let mut bg = BipartiteGraph::default();
-
-        // bg.ne = E.len();
-        // bg.fadjlist = vec![vec![0, 1], vec![0]];
-        // bg.badjlist = vec![vec![0, 1], vec![0]];
 
         vars!(x, y);
         let mut eqs = vec![binop(Add, x.clone(), y.clone()), x.clone()];
@@ -610,7 +620,7 @@ mod test {
 
         // let eqs = vec![eq1, eq2];
 
-        let deq2 = take_der(eq2);
+        let deq2 = get_der(eq2);
         // dx + 2y*dy
         let ydy = binop(Mul, y.clone(), dy.clone());
         let expected_deq2 = binop(
