@@ -170,7 +170,7 @@ pub fn vars_from_eqs(eqs: &[Rc<Ex>]) -> Vec<Rc<Ex>> {
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct BipartiteGraph {
-    pub ne: usize,
+    // pub ne: usize,
     pub fadjlist: Vec<HashSet<usize>>, // each element is a set of v_nodes (indices) that occur in the equation. len == neqs
     pub badjlist: Vec<HashSet<usize>>, // this is which equations the v_nodes occur in. len == nvars
 }
@@ -203,15 +203,14 @@ impl BipartiteGraph {
             }
         }
 
-        BipartiteGraph {
-            ne: fadjlist.iter().map(|inner_vec| inner_vec.len()).sum(),
-            fadjlist,
-            badjlist,
-        }
+        BipartiteGraph { fadjlist, badjlist }
     }
 
     pub fn nv(&self) -> usize {
         self.fadjlist.len() + self.badjlist.len()
+    }
+    pub fn ne(&self) -> usize {
+        self.fadjlist.iter().map(|inner_vec| inner_vec.len()).sum()
     }
 }
 

@@ -9,8 +9,8 @@ fn main() {
     println!("VARS: {:?}", vars);
     let mut s = state_from_eqs(&sys, vars.as_slice());
     let pend_matching = pants(&mut s);
+    println!("{:?}", s);
     println!("{:?}", pend_matching);
-    println!("{:#?}", s);
 }
 
 #[cfg(test)]
@@ -32,7 +32,6 @@ mod test {
 
         let mut bg = BipartiteGraph::default();
 
-        bg.ne = E.len();
         bg.fadjlist = vec![
             [0, 1].iter().cloned().collect(),
             [0].iter().cloned().collect(),
@@ -86,6 +85,9 @@ mod test {
         let mut s = state_from_eqs(&example_eqs, &example_vars);
         let matching = pants(&mut s);
         println!("{:?}", matching);
+
+
+        // STOCHASTIC FAILURE STILL
         assert_eq!(
             matching,
             Matching {
