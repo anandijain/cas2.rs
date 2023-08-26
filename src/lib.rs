@@ -9,6 +9,7 @@ use ordered_float::NotNan;
 // use petgraph::graph::{DiGraph, NodeIndex};
 // use petgraph::Graph;
 // use petgraph::Undirected;
+use crate::Ex::*;
 use BinOpType::*;
 
 #[macro_export]
@@ -80,22 +81,22 @@ pub fn der(expr: Rc<Ex>, n: usize) -> Rc<Ex> {
 
 pub fn get_der(expr: Rc<Ex>) -> Rc<Ex> {
     match &*expr {
-        Ex::Const(_) => Rc::new(Ex::Const(NotNan::new(0.0).unwrap())), // d/dt(c) = 0
-        Ex::Var(name) => Rc::new(Ex::Der(Rc::new(Ex::Var(name.clone())), 1)), // d/dt(x) = Der(x, 1)
-        Ex::Par(_) => Rc::new(Ex::Const(NotNan::new(0.0).unwrap())),   // d/dt(parameter) = 0
-        Ex::BinOp(BinOpType::Add, left, right) => {
+        Const(_) => Rc::new(Const(NotNan::new(0.0).unwrap())), // d/dt(c) = 0
+        Var(name) => Rc::new(Der(Rc::new(Var(name.clone())), 1)), // d/dt(x) = Der(x, 1)
+        Par(_) => Rc::new(Const(NotNan::new(0.0).unwrap())),   // d/dt(parameter) = 0
+        BinOp(BinOpType::Add, left, right) => {
             // (u + v)' = u' + v'
             let left_der = get_der(left.clone());
             let right_der = get_der(right.clone());
             binop(Add, left_der, right_der)
         }
-        Ex::BinOp(BinOpType::Sub, left, right) => {
+        BinOp(BinOpType::Sub, left, right) => {
             // (u - v)' = u' - v'
             let left_der = get_der(left.clone());
             let right_der = get_der(right.clone());
             binop(Sub, left_der, right_der)
         }
-        Ex::BinOp(BinOpType::Mul, left, right) => {
+        BinOp(BinOpType::Mul, left, right) => {
             // (u * v)' = u' * v + u * v'
             let left_der = get_der(left.clone());
             let right_der = get_der(right.clone());
@@ -105,7 +106,7 @@ pub fn get_der(expr: Rc<Ex>) -> Rc<Ex> {
                 binop(Mul, left.clone(), right_der),
             )
         }
-        Ex::BinOp(BinOpType::Div, left, right) => {
+        BinOp(BinOpType::Div, left, right) => {
             // (u / v)' = (u' * v - u * v') / v^2
             let left_der = get_der(left.clone());
             let right_der = get_der(right.clone());
@@ -117,12 +118,13 @@ pub fn get_der(expr: Rc<Ex>) -> Rc<Ex> {
             let denominator = binop(Mul, right.clone(), right.clone());
             binop(Div, numerator, denominator)
         }
-        Ex::UnOp(UnOpType::Neg, operand) => {
+        UnOp(UnOpType::Neg, operand) => {
             // (-u)' = -u'
             let operand_der = get_der(operand.clone());
             unop(UnOpType::Neg, operand_der)
         }
         // Add more cases for other unary operations (e.g., Sin, Cos) as needed.
+        Der(inner, n) => der(inner.clone(), n + 1),
         _ => panic!("get_der: unsupported expression: {:?}", expr),
     }
 }
@@ -449,7 +451,8 @@ pub fn pants(s: &mut State) -> Matching {
                 highest_diff_vars[structure.var_diff.to[vidx].unwrap()] = true;
 
                 // add the new variable to fullvars
-                let new_var = der(s.fullvars[vidx].clone(), 1);
+                let nv_ex = s.fullvars[vidx].clone();
+                let new_var = get_der(nv_ex);
                 println!("TOOKA  NEWVAR {:?}", new_var);
                 s.fullvars.push(new_var);
 
