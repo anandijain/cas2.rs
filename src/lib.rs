@@ -29,36 +29,6 @@ macro_rules! pars {
     };
 }
 
-pub fn pend_sys() -> Vec<Rc<Ex>> {
-    vars!(x, y, T, x_t, y_t);
-    pars!(r, g);
-
-    let mut vars = vec![x.clone(), y.clone(), T.clone(), x_t.clone(), y_t.clone()];
-    vars.sort();
-
-    let mut eqs = vec![
-        binop(Sub, der(x.clone(), 1), x_t.clone()),
-        binop(Sub, der(y.clone(), 1), y_t.clone()),
-        binop(Sub, der(x_t.clone(), 1), binop(Mul, T.clone(), x.clone())),
-        binop(
-            Sub,
-            der(y_t.clone(), 1),
-            binop(Sub, binop(Mul, T.clone(), y.clone()), g.clone()),
-        ),
-        binop(
-            Sub,
-            binop(
-                Add,
-                binop(Mul, x.clone(), x.clone()),
-                binop(Mul, y.clone(), y.clone()),
-            ),
-            binop(Mul, r.clone(), r.clone()),
-        ),
-    ];
-    eqs.sort();
-    eqs
-}
-
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Ex {
     Const(NotNan<f64>),
@@ -265,7 +235,7 @@ pub struct State {
     pub extra_eqs: Vec<Rc<Ex>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Matching {
     pub m: Vec<Option<usize>>, // v_node -> e_node (Assign in paper)
 }
@@ -389,6 +359,9 @@ pub fn augmenting_path(
     colored_vars: &mut Vec<bool>,
     is_highest_diff_var: &Vec<bool>, //impl Fn(usize) -> bool,
 ) -> bool {
+    println!("augmenting_path: v = {}", v);
+    println!("colored_eqs: {:?}", colored_eqs);
+    println!("colored_vars: {:?}", colored_vars);
     colored_eqs[v] = true;
 
     // variables depending on equation v
@@ -406,7 +379,7 @@ pub fn augmenting_path(
         if !colored_vars[*j] && is_highest_diff_var[*j] {
             colored_vars[*j] = true;
             let k = m.m[*j].unwrap(); // the equation variable[j] is matched to
-            if augmenting_path(m, g, *j, colored_eqs, colored_vars, is_highest_diff_var) {
+            if augmenting_path(m, g, k, colored_eqs, colored_vars, is_highest_diff_var) {
                 m.m[*j] = Some(v);
                 return true;
             }
@@ -417,6 +390,7 @@ pub fn augmenting_path(
 
 pub fn pants(s: &mut State) -> Matching {
     println!("{:?}", s.fullvars);
+    println!("{:?}", s.structure.var_diff);
     let mut highest_diff_vars = computed_highest_diff_variables(&s.structure);
 
     let mut structure = &mut s.structure;
@@ -432,8 +406,9 @@ pub fn pants(s: &mut State) -> Matching {
     let mut colored_eqs = vec![false; neqs];
     let mut colored_vars = vec![false; nvars];
 
-    for mut eq in 0..neqs {
-        let i = eq;
+    for keq in 0..neqs {
+        println!("STARTING EQ {} {:?}", keq, s.eqs[keq]);
+        let mut eq = keq;
         let mut path_found = false;
 
         loop {
@@ -449,10 +424,10 @@ pub fn pants(s: &mut State) -> Matching {
                 &highest_diff_vars,
             );
             if path_found {
-                println!("FOUND A PATH for eq# {}, {:?}", eq, m);
+                println!("FOUND A PATH for eq# {} {:?}, {:?}", eq, s.eqs[eq], m);
                 break;
             }
-            println!("{:?}", colored_eqs);
+            println!("colored_eqs: {:?}", colored_eqs);
             for vidx in 0..colored_vars.len() {
                 if !colored_vars[vidx] {
                     continue;
@@ -474,7 +449,9 @@ pub fn pants(s: &mut State) -> Matching {
                 highest_diff_vars[structure.var_diff.to[vidx].unwrap()] = true;
 
                 // add the new variable to fullvars
-                s.fullvars.push(der(s.fullvars[vidx].clone(), 1));
+                let new_var = der(s.fullvars[vidx].clone(), 1);
+                println!("TOOKA  NEWVAR {:?}", new_var);
+                s.fullvars.push(new_var);
 
                 // m is a matching from v
                 m.m.push(None);
@@ -511,14 +488,13 @@ pub fn pants(s: &mut State) -> Matching {
                 }
             }
             for vidx in 0..colored_vars.len() {
+                println!("in the place we dont go");
                 if !colored_vars[vidx] {
                     continue;
                 }
                 // var_eq_matching[var_to_diff[var]] = eq_to_diff[var_eq_matching[var]]
-
                 m.m[structure.var_diff.to[vidx].unwrap()] = structure.eq_diff.to[m.m[vidx].unwrap()]
             }
-            println!("m: {:?}", m);
             // println!("{:?}", );
             eq = structure.eq_diff.to[eq].unwrap();
         }
@@ -537,4 +513,34 @@ pub fn example2() -> (Vec<Rc<Ex>>, Vec<Rc<Ex>>) {
 
     let eqs = vec![eq1, eq2];
     (eqs, vec![dx.clone(), dy.clone(), x.clone(), y.clone()])
+}
+
+pub fn pend_sys() -> Vec<Rc<Ex>> {
+    vars!(x, y, T, x_t, y_t);
+    pars!(r, g);
+
+    let mut vars = vec![x.clone(), y.clone(), T.clone(), x_t.clone(), y_t.clone()];
+    vars.sort();
+
+    let mut eqs = vec![
+        binop(Sub, der(x.clone(), 1), x_t.clone()),
+        binop(Sub, der(y.clone(), 1), y_t.clone()),
+        binop(Sub, der(x_t.clone(), 1), binop(Mul, T.clone(), x.clone())),
+        binop(
+            Sub,
+            der(y_t.clone(), 1),
+            binop(Sub, binop(Mul, T.clone(), y.clone()), g.clone()),
+        ),
+        binop(
+            Sub,
+            binop(
+                Add,
+                binop(Mul, x.clone(), x.clone()),
+                binop(Mul, y.clone(), y.clone()),
+            ),
+            binop(Mul, r.clone(), r.clone()),
+        ),
+    ];
+    eqs.sort();
+    eqs
 }
