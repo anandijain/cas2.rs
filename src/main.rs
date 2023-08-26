@@ -10,6 +10,7 @@ fn main() {
     let mut s = state_from_eqs(&sys, vars.as_slice());
     let pend_matching = pants(&mut s);
     println!("{:?}", pend_matching);
+    println!("{:#?}", s);
 }
 
 #[cfg(test)]

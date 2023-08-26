@@ -1,4 +1,7 @@
-
+now that pants(pend_sys()) at least doesn't panic the next steps are 
+1) add tests to verify the matching is correct
+2) reassemble eqs/system
+3) codegen for sundials 
 
 1) x - y
 2) y
