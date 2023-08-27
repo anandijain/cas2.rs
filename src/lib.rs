@@ -1,15 +1,13 @@
 #![feature(is_sorted)]
 #![allow(warnings)]
+extern crate colored;
+use colored::*;
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use ordered_float::NotNan;
-// use petgraph::dot::{self, Dot};
-// use petgraph::graph::{DiGraph, NodeIndex};
-// use petgraph::Graph;
-// use petgraph::Undirected;
 use crate::Ex::*;
+use ordered_float::NotNan;
 use BinOpType::*;
 
 #[macro_export]
@@ -38,6 +36,10 @@ pub enum Ex {
     BinOp(BinOpType, Rc<Ex>, Rc<Ex>),
     UnOp(UnOpType, Rc<Ex>),
     Der(Rc<Ex>, usize),
+    // Int
+    // Real
+    // Complex
+    // Rat
 }
 
 #[derive(Clone, Hash, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -46,6 +48,8 @@ pub enum BinOpType {
     Sub,
     Mul,
     Div,
+    // Pow,
+    // Eq,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -53,6 +57,8 @@ pub enum UnOpType {
     Neg,
     Sin,
     Cos,
+    Exp,
+    Log,
 }
 
 pub fn c(val: f64) -> Rc<Ex> {
@@ -77,6 +83,24 @@ pub fn unop(op: UnOpType, operand: Rc<Ex>) -> Rc<Ex> {
 
 pub fn der(expr: Rc<Ex>, n: usize) -> Rc<Ex> {
     Rc::new(Ex::Der(expr, n))
+}
+
+macro_rules! gen_binop_funcs {
+    ($($func_name:ident : $bin_op:ident),*) => {
+        $(
+            pub fn $func_name(lhs: Rc<Ex>, rhs: Rc<Ex>) -> Rc<Ex> {
+                binop(BinOpType::$bin_op, lhs, rhs)
+            }
+        )*
+    };
+}
+
+// Generate functions add, sub, mul, div
+gen_binop_funcs! {
+    add: Add,
+    sub: Sub,
+    mul: Mul,
+    div: Div
 }
 
 pub fn get_der(expr: Rc<Ex>) -> Rc<Ex> {
@@ -129,9 +153,169 @@ pub fn get_der(expr: Rc<Ex>) -> Rc<Ex> {
     }
 }
 
-// pub fn get_jac(eqs, vars) -> Vec<Vec<Rc<Ex>>> {
-//     todo!()
-// }
+pub fn replace_all(expr: Rc<Ex>, target: &Rc<Ex>, replacement: Rc<Ex>) -> Rc<Ex> {
+    if &*expr == &**target {
+        return replacement.clone();
+    }
+
+    match &*expr {
+        Ex::Const(_) | Ex::Var(_) | Ex::Par(_) => expr.clone(),
+        Ex::BinOp(op, lhs, rhs) => {
+            let new_lhs = replace_all(lhs.clone(), target, replacement.clone());
+            let new_rhs = replace_all(rhs.clone(), target, replacement.clone());
+            binop(op.clone(), new_lhs, new_rhs)
+        }
+        Ex::UnOp(op, operand) => {
+            let new_operand = replace_all(operand.clone(), target, replacement.clone());
+            unop(op.clone(), new_operand)
+        }
+        Ex::Der(operand, n) => {
+            let new_operand = replace_all(operand.clone(), target, replacement.clone());
+            der(new_operand, *n)
+        }
+    }
+}
+
+pub fn simplify(expr: Rc<Ex>) -> Rc<Ex> {
+    match &*expr {
+        Ex::Const(_) => expr.clone(),
+        Ex::Var(_) => expr.clone(),
+        Ex::Par(_) => expr.clone(),
+        Ex::BinOp(op, lhs, rhs) => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+
+            // Constant Folding
+            if let (Ex::Const(left_val), Ex::Const(right_val)) =
+                (&*lhs_simplified, &*rhs_simplified)
+            {
+                match op {
+                    Add => return c((**left_val + **right_val)),
+                    Sub => return c((**left_val - **right_val)),
+                    Mul => return c((**left_val * **right_val)),
+                    Div => {
+                        if *right_val == NotNan::new(0.0).unwrap() {
+                            panic!("Division by zero");
+                        }
+                        return c((**left_val / **right_val));
+                    }
+                }
+            }
+
+            // Zero Laws
+            if let Ex::Const(val) = &*rhs_simplified {
+                if *val == NotNan::new(0.0).unwrap() {
+                    match op {
+                        Add | Sub => return lhs_simplified.clone(),
+                        Mul => return c(0.0),
+                        Div => panic!("Division by zero"), // x / 0 is undefined
+                    }
+                } else if *val == NotNan::new(1.0).unwrap() {
+                    if matches!(op, Div) {
+                        return lhs_simplified.clone(); // x / 1 = x
+                    }
+                }
+            }
+
+            if let Ex::Const(val) = &*lhs_simplified {
+                if *val == NotNan::new(0.0).unwrap() {
+                    match op {
+                        Add => return rhs_simplified.clone(),
+                        Sub => return unop(UnOpType::Neg, rhs_simplified.clone()),
+                        Mul => return c(0.0),
+                        Div => return c(0.0), // 0 / x = 0, x != 0
+                    }
+                }
+            }
+
+            // Other Simplification Rules (Identity laws, etc.)
+            // ...
+            if lhs_simplified == rhs_simplified {
+                match op {
+                    Add => return mul(lhs_simplified.clone(), c(2.0)),
+                    Sub => return c(0.0),
+                    Mul => return mul(lhs_simplified.clone(), lhs_simplified.clone()), // or pow(lhs_simplified, c(2.0)) if you later add a Pow operation
+                    Div => return c(1.0),
+                }
+            }
+
+            binop(op.clone(), lhs_simplified, rhs_simplified)
+        }
+        Ex::UnOp(op, operand) => {
+            let operand_simplified = simplify(operand.clone());
+            unop(op.clone(), operand_simplified)
+        }
+        Ex::Der(operand, n) => {
+            let operand_simplified = simplify(operand.clone());
+            // If the operand is a binomial, apply the product rule or chain rule
+            if let Ex::BinOp(op, lhs, rhs) = &*operand_simplified {
+                match op {
+                    // If it's addition or subtraction, the derivative distributes across the terms.
+                    Add | Sub => {
+                        let lhs_der = der(simplify(lhs.clone()), *n);
+                        let rhs_der = der(simplify(rhs.clone()), *n);
+                        return binop(op.clone(), lhs_der, rhs_der);
+                    }
+                    // If it's multiplication or division, you'd apply the product rule or quotient rule,
+                    // but let's not get into that right now.
+                    _ => {}
+                }
+            }
+            // If it's not a binomial or other special case, just return the derivative of the simplified operand.
+            der(operand_simplified, *n)
+        }
+    }
+}
+
+pub fn full_simplify(mut expr: Rc<Ex>) -> Rc<Ex> {
+    let mut i = 0;
+    loop {
+        let simplified = simplify(expr.clone());
+        if *simplified == *expr {
+            return simplified;
+        }
+        expr = simplified;
+        i += 1;
+        if i > 100 {
+            panic!("full_simplify: too many iterations");
+        }
+    }
+}
+
+impl Ex {
+    pub fn to_pretty_string(&self) -> String {
+        match self {
+            Ex::Const(value) => format!("{}", value.to_string().green()),
+            Ex::Var(name) => format!("{}[t]", name.blue()),
+            Ex::Par(name) => format!("{}", name.red()),
+            Ex::BinOp(op, lhs, rhs) => {
+                let op_str = match op {
+                    BinOpType::Add => "+",
+                    BinOpType::Sub => "-",
+                    BinOpType::Mul => "*",
+                    BinOpType::Div => "/",
+                };
+                format!(
+                    "({} {} {})",
+                    lhs.to_pretty_string(),
+                    op_str,
+                    rhs.to_pretty_string()
+                )
+            }
+            Ex::UnOp(op, operand) => {
+                let op_str = match op {
+                    UnOpType::Neg => "-", // this is broken
+                    UnOpType::Sin => "Sin",
+                    UnOpType::Cos => "Cos",
+                    UnOpType::Exp => "Exp",
+                    UnOpType::Log => "Log",
+                };
+                format!("{}[{}]", op_str, operand.to_pretty_string())
+            }
+            Ex::Der(operand, n) => format!("D[{},{{{},{}}}]", operand.to_pretty_string(), "t", n),
+        }
+    }
+}
 
 fn extract_vars_and_ders(expr: Rc<Ex>) -> HashSet<Rc<Ex>> {
     let mut result = HashSet::new();
@@ -226,6 +410,12 @@ pub struct Structure {
     pub eq_diff: DiffGraph,  // e_node -> e_node (B in paper)
     pub g: BipartiteGraph,   // e_node (srcs) <-> v_node (dsts)
     pub solveable_graph: Option<BipartiteGraph>,
+}
+
+#[derive(Debug)]
+pub struct Eq {
+    lhs: Rc<Ex>,
+    rhs: Rc<Ex>,
 }
 
 #[derive(Debug)]
@@ -360,9 +550,9 @@ pub fn augmenting_path(
     colored_vars: &mut Vec<bool>,
     is_highest_diff_var: &Vec<bool>, //impl Fn(usize) -> bool,
 ) -> bool {
-    println!("augmenting_path: v = {}", v);
-    println!("colored_eqs: {:?}", colored_eqs);
-    println!("colored_vars: {:?}", colored_vars);
+    // println!("augmenting_path: v = {}", v);
+    // println!("colored_eqs: {:?}", colored_eqs);
+    // println!("colored_vars: {:?}", colored_vars);
     colored_eqs[v] = true;
 
     // variables depending on equation v
@@ -390,8 +580,8 @@ pub fn augmenting_path(
 }
 
 pub fn pants(s: &mut State) -> Matching {
-    println!("{:?}", s.fullvars);
-    println!("{:?}", s.structure.var_diff);
+    // println!("{:?}", s.fullvars);
+    // println!("{:?}", s.structure.var_diff);
     let mut highest_diff_vars = computed_highest_diff_variables(&s.structure);
 
     let mut structure = &mut s.structure;
@@ -408,7 +598,7 @@ pub fn pants(s: &mut State) -> Matching {
     let mut colored_vars = vec![false; nvars];
 
     for keq in 0..neqs {
-        println!("STARTING EQ {} {:?}", keq, s.eqs[keq]);
+        // println!("STARTING EQ {} {:?}", keq, s.eqs[keq]);
         let mut eq = keq;
         let mut path_found = false;
 
@@ -425,10 +615,10 @@ pub fn pants(s: &mut State) -> Matching {
                 &highest_diff_vars,
             );
             if path_found {
-                println!("FOUND A PATH for eq# {} {:?}, {:?}", eq, s.eqs[eq], m);
+                // println!("FOUND A PATH for eq# {} {:?}, {:?}", eq, s.eqs[eq], m);
                 break;
             }
-            println!("colored_eqs: {:?}", colored_eqs);
+            // println!("colored_eqs: {:?}", colored_eqs);
             for vidx in 0..colored_vars.len() {
                 if !colored_vars[vidx] {
                     continue;
@@ -452,7 +642,7 @@ pub fn pants(s: &mut State) -> Matching {
                 // add the new variable to fullvars
                 let nv_ex = s.fullvars[vidx].clone();
                 let new_var = get_der(nv_ex);
-                println!("TOOKA  NEWVAR {:?}", new_var);
+                // println!("TOOKA  NEWVAR {:?}", new_var);
                 s.fullvars.push(new_var);
 
                 // m is a matching from v
@@ -473,7 +663,11 @@ pub fn pants(s: &mut State) -> Matching {
                     structure.eq_diff.to[eidx] = Some(neqs - 1);
                     structure.eq_diff.to.push(None); // the new equation has no outgoing edges
                     structure.eq_diff.from.push(Some(eidx)); // but there is a new incoming edge
-                    let new_eq = get_der(s.eqs[eidx].clone()); // eq to diff
+                                                             // let new_eq = get_der(s.eqs[eidx].clone()); // eq to diff
+                    let eq_to_get_der = s.eqs[eidx].clone();
+
+                    // let new_eq = Eq{ lhs: get_der(eq_to_get_der.lhs), rhs: get_der(eq_to_get_der.rhs) };
+                    let new_eq = get_der(eq_to_get_der); // eq to diff
                     s.eqs.push(new_eq.clone());
                     println!("TOOKA  DER {:?}", new_eq);
 
@@ -486,11 +680,11 @@ pub fn pants(s: &mut State) -> Matching {
                         g.fadjlist[neqs - 1].insert(structure.var_diff.to[*e_to_j].unwrap());
                         g.badjlist[structure.var_diff.to[*e_to_j].unwrap()].insert(neqs - 1);
                     }
-                    println!("{:?}", g);
+                    // println!("{:?}", g);
                 }
             }
             for vidx in 0..colored_vars.len() {
-                println!("in the place we dont go");
+                // println!("in the place we dont go");
                 if !colored_vars[vidx] {
                     continue;
                 }
@@ -502,6 +696,23 @@ pub fn pants(s: &mut State) -> Matching {
         }
     }
     m
+}
+
+pub fn map_vars_to_eqs(s: &State, m: &Matching) -> HashMap<Rc<Ex>, Rc<Ex>> {
+    let mut map = HashMap::new();
+
+    // Iterate through the Matching vector
+    for (var_index, eq_index_option) in m.m.iter().enumerate() {
+        // If there's a matching equation for this variable, add to map
+        if let Some(eq_index) = eq_index_option {
+            let var = s.fullvars[var_index].clone();
+            let eq = s.eqs[*eq_index].clone();
+
+            map.insert(var, eq);
+        }
+    }
+
+    map
 }
 
 pub fn example2() -> (Vec<Rc<Ex>>, Vec<Rc<Ex>>) {
@@ -517,6 +728,7 @@ pub fn example2() -> (Vec<Rc<Ex>>, Vec<Rc<Ex>>) {
     (eqs, vec![dx.clone(), dy.clone(), x.clone(), y.clone()])
 }
 
+/// example 3 in the paper
 pub fn pend_sys() -> Vec<Rc<Ex>> {
     vars!(x, y, T, x_t, y_t);
     pars!(r, g);
@@ -543,6 +755,15 @@ pub fn pend_sys() -> Vec<Rc<Ex>> {
             binop(Mul, r.clone(), r.clone()),
         ),
     ];
-    eqs.sort();
+    // eqs.sort();
     eqs
 }
+
+// =K,(Co-C)-R,
+// (33a) #=KI(To-T)+K:zR K3(T-Tc),
+// 0--R-g exp(-g4/T)C.
+// pub fn example_4() -> Vec<Rc<Ex>>{
+//     vars!();
+//     pars!(K1, K2, K3, K4);
+
+// }
